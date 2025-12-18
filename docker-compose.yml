@@ -248,8 +248,10 @@ services:
   smoke:
     image: alpine:3.20
     container_name: smoke
-    networks: [ appnet ]
+    networks: [appnet]
     depends_on:
+      filebeat:
+        condition: service_started
       pd:
         condition: service_healthy
       tidb:
@@ -267,15 +269,39 @@ services:
       elasticsearch:
         condition: service_started
       grafana:
-        condition: service_healthy
+        condition: service_started
     volumes:
       - ./tests:/tests:ro
-    entrypoint: [ "/bin/sh", "-lc" ]
-    command: >
-      "
-      set -e;
-      apk add --no-cache bash curl jq mysql-client kcat >/dev/null;
-      /tests/smoke.sh
-      "
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        set -euxo pipefail
+        
+        echo "[smoke] starting"
+        ls -lah /tests
+        
+        echo "[smoke] installing tools..."
+        apk add --no-cache bash curl jq mysql-client kcat
+        
+        echo "[smoke] tools versions:"
+        bash --version | head -n 1 || true
+        curl --version | head -n 1 || true
+        jq --version || true
+        kcat -V || true
+        mysql --version || true
+        
+        echo "[smoke] preparing script..."
+        cp /tests/smoke.sh /tmp/smoke.sh
+        sed -i 's/\r$//' /tmp/smoke.sh
+        chmod +x /tmp/smoke.sh
+        
+        echo "[smoke] running smoke.sh..."
+        /tmp/smoke.sh
+        
+        echo "[smoke] done"
     restart: "no"
+
+
+
 

@@ -108,13 +108,23 @@ If any step fails, the test stops and reports the error.
 
 ---
 
+## See Smoke Test Run
+After the build completes, you can see the smoke test logs in real time:
+
+```bash
+   docker logs -f smoke
+```
+---
+
 ## Run Smoke Test Again
 
 ```bash
   docker-compose rm -f smoke
+```
+```bash
   docker-compose up smoke
 ```
-
+Go to Grafana and refresh the dashboards: http://localhost:3000/d/helfy-cdc/helfy-cdc-logs-and-ops?from=now-1h&to=now&timezone=browser&refresh=10s.
 Then u can see the metrics in Grafana.
 ![img.png](img.png)
 

@@ -16,6 +16,5 @@ datasources:
     jsonData:
       index: "cdc-events-*"
       timeField: "@timestamp"
-      esVersion: "8.0.0"
       logMessageField: "message"
       logLevelField: "level"
