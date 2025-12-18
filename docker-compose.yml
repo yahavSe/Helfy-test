@@ -82,11 +82,13 @@ services:
       - KAFKA_CFG_NODE_ID=1
       - KAFKA_CFG_PROCESS_ROLES=broker,controller
       - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+
       - KAFKA_CFG_LISTENERS=INTERNAL://:9092,EXTERNAL://:9094,CONTROLLER://:9093
-      - KAFKA_CFG_ADVERTISED_LISTENERS=INTERNAL://kafka:9092,EXTERNAL://localhost:9094
+      - KAFKA_CFG_ADVERTISED_LISTENERS=INTERNAL://kafka:9092,EXTERNAL://kafka:9094
       - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
       - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
       - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=INTERNAL
+
       - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
       - KAFKA_CFG_NUM_PARTITIONS=1
       - KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR=1
@@ -158,7 +160,7 @@ services:
   cdc-init:
     image: pingcap/ticdc:v7.5.3
     container_name: cdc-init
-    networks: [ appnet ]
+    networks: [appnet]
     depends_on:
       kafka:
         condition: service_healthy
@@ -167,13 +169,13 @@ services:
       tidb-init:
         condition: service_completed_successfully
     volumes:
-      - ./cdc:/work/cdc:ro
-    entrypoint: [ "/bin/sh", "-lc" ]
-    command: >
-      "
-      /bin/sh /work/cdc/changefeed.sh
-      "
+      - ./cdc/init.sh:/init.sh:ro
+    entrypoint: ["/bin/sh","-c"]
+    command:
+      - "tr -d '\r' < /init.sh > /tmp/init.sh && chmod +x /tmp/init.sh && /tmp/init.sh"
     restart: "no"
+
+
 
   consumer:
     build: ./apps/consumer

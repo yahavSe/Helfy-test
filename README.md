@@ -126,7 +126,7 @@ After the build completes, you can see the smoke test logs in real time:
 ```
 Go to Grafana and refresh the dashboards: http://localhost:3000/d/helfy-cdc/helfy-cdc-logs-and-ops?from=now-1h&to=now&timezone=browser&refresh=10s.
 Then u can see the metrics in Grafana.
-![img.png](img.png)
+![img.png](documentation/img.png)![img.png](img.png)
 
 ---
 
