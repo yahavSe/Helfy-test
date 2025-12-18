@@ -1,0 +1,281 @@
+networks:
+  appnet:
+    name: helfy-test_appnet
+
+volumes:
+  pd_data:
+  tikv_data:
+  tidb_data:
+  kafka_data:
+
+services:
+  pd:
+    image: pingcap/pd:v7.5.3
+    container_name: pd
+    networks: [ appnet ]
+    command:
+      - --name=pd
+      - --data-dir=/data/pd
+      - --client-urls=http://0.0.0.0:2379
+      - --peer-urls=http://0.0.0.0:2380
+      - --advertise-client-urls=http://pd:2379
+      - --advertise-peer-urls=http://pd:2380
+      - --initial-cluster=pd=http://pd:2380
+    ports:
+      - "2379:2379"
+    volumes:
+      - pd_data:/data/pd
+    healthcheck:
+      test: [ "CMD", "sh", "-c", "wget -qO- http://127.0.0.1:2379/pd/api/v1/version >/dev/null 2>&1" ]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+
+  tikv:
+    image: pingcap/tikv:v7.5.3
+    container_name: tikv
+    networks: [ appnet ]
+    depends_on:
+      pd:
+        condition: service_healthy
+    command:
+      - --addr=0.0.0.0:20160
+      - --advertise-addr=tikv:20160
+      - --data-dir=/data/tikv
+      - --pd=pd:2379
+    ports:
+      - "20160:20160"
+    volumes:
+      - tikv_data:/data/tikv
+
+  tidb:
+    image: pingcap/tidb:v7.5.3
+    container_name: tidb
+    networks: [ appnet ]
+    depends_on:
+      pd:
+        condition: service_healthy
+      tikv:
+        condition: service_started
+    command:
+      - --store=tikv
+      - --path=pd:2379
+      - --advertise-address=tidb
+    ports:
+      - "4000:4000"
+    volumes:
+      - tidb_data:/var/lib/tidb
+    healthcheck:
+      test: [ "CMD", "sh", "-c", "wget -qO- http://127.0.0.1:10080/status >/dev/null 2>&1" ]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+
+  kafka:
+    image: bitnamilegacy/kafka:latest
+    container_name: kafka
+    networks: [ appnet ]
+    ports:
+      - "9094:9094"
+    environment:
+      - KAFKA_ENABLE_KRAFT=yes
+      - KAFKA_CFG_NODE_ID=1
+      - KAFKA_CFG_PROCESS_ROLES=broker,controller
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      - KAFKA_CFG_LISTENERS=INTERNAL://:9092,EXTERNAL://:9094,CONTROLLER://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=INTERNAL://kafka:9092,EXTERNAL://localhost:9094
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=INTERNAL
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+      - KAFKA_CFG_NUM_PARTITIONS=1
+      - KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - KAFKA_CFG_GROUP_INITIAL_REBALANCE_DELAY_MS=0
+      - ALLOW_PLAINTEXT_LISTENER=yes
+    volumes:
+      - kafka_data:/bitnami/kafka
+    healthcheck:
+      test: [ "CMD", "bash", "-lc", "/opt/bitnami/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:9092 >/dev/null 2>&1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  ticdc:
+    image: pingcap/ticdc:v7.5.3
+    container_name: ticdc
+    networks: [ appnet ]
+    depends_on:
+      pd:
+        condition: service_healthy
+      tidb:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    command: [ "/cdc", "server", "--addr=0.0.0.0:8300", "--advertise-addr=ticdc:8300", "--pd=http://pd:2379" ]
+    ports:
+      - "8300:8300"
+    healthcheck:
+      test: [ "CMD", "sh", "-lc", "wget -qO- http://127.0.0.1:8300/api/v2/status >/dev/null 2>&1" ]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+
+  tidb-init:
+    image: mysql:8.0
+    container_name: tidb-init
+    networks: [ appnet ]
+    restart: "no"
+    depends_on:
+      tidb:
+        condition: service_healthy
+    volumes:
+      - ./db/init:/init:ro
+    entrypoint: [ "/bin/sh", "-c" ]
+    command: >
+      "
+      set -e;
+
+      echo '[tidb-init] waiting for TiDB...' ;
+      for i in $(seq 1 120); do
+        mysql -h tidb -P 4000 -u root -e 'SELECT 1' >/dev/null 2>&1 && break;
+        sleep 2;
+      done;
+
+      echo '[tidb-init] applying schema...' ;
+      mysql -h tidb -P 4000 -u root < /init/01_schema.sql;
+
+      echo '[tidb-init] applying seed...' ;
+      if [ -f /init/02_seed.sql ]; then mysql -h tidb -P 4000 -u root < /init/02_seed.sql; fi
+
+      echo '[tidb-init] creating default user...' ;
+      mysql -h tidb -P 4000 -u root < /init/03_users.sql;
+
+      echo '[tidb-init] done.' ;
+      "
+
+  cdc-init:
+    image: pingcap/ticdc:v7.5.3
+    container_name: cdc-init
+    networks: [ appnet ]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      ticdc:
+        condition: service_healthy
+      tidb-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./cdc:/work/cdc:ro
+    entrypoint: [ "/bin/sh", "-lc" ]
+    command: >
+      "
+      /bin/sh /work/cdc/changefeed.sh
+      "
+    restart: "no"
+
+  consumer:
+    build: ./apps/consumer
+    container_name: consumer
+    networks: [ appnet ]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      cdc-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - KAFKA_TOPIC=app_cdc
+      - KAFKA_GROUP=cdc-consumer
+      - METRICS_PORT=9102
+    ports:
+      - "9102:9102"
+
+  prometheus:
+    image: prom/prometheus:v2.53.1
+    container_name: prometheus
+    networks: [ appnet ]
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    container_name: elasticsearch
+    networks: [ appnet ]
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.15.3
+    container_name: filebeat
+    user: root
+    networks: [ appnet ]
+    depends_on:
+      elasticsearch:
+        condition: service_started
+    volumes:
+      - ./observability/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: [ "--strict.perms=false" ]
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: grafana
+    networks: [ appnet ]
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/provisioning/dashboards-json:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: [ "CMD", "sh", "-lc", "wget -qO- http://127.0.0.1:3000/api/health | grep -q ok" ]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+
+  smoke:
+    image: alpine:3.20
+    container_name: smoke
+    networks: [ appnet ]
+    depends_on:
+      pd:
+        condition: service_healthy
+      tidb:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      ticdc:
+        condition: service_healthy
+      cdc-init:
+        condition: service_completed_successfully
+      consumer:
+        condition: service_started
+      prometheus:
+        condition: service_started
+      elasticsearch:
+        condition: service_started
+      grafana:
+        condition: service_healthy
+    volumes:
+      - ./tests:/tests:ro
+    entrypoint: [ "/bin/sh", "-lc" ]
+    command: >
+      "
+      set -e;
+      apk add --no-cache bash curl jq mysql-client kcat >/dev/null;
+      /tests/smoke.sh
+      "
+    restart: "no"
+

@@ -1,0 +1,3 @@
+CREATE USER IF NOT EXISTS 'app_user'@'%' IDENTIFIED BY 'app_pass';
+GRANT ALL PRIVILEGES ON app.* TO 'app_user'@'%';
+FLUSH PRIVILEGES;

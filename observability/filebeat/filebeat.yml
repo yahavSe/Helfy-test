@@ -1,0 +1,28 @@
+filebeat.inputs:
+  - type: container
+    paths:
+      - /var/lib/docker/containers/*/*.log
+    processors:
+      - add_docker_metadata: ~
+
+      - drop_event:
+          when:
+            not:
+              equals:
+                container.name: "consumer"
+
+processors:
+  - decode_json_fields:
+      fields: ["message"]
+      target: ""
+      overwrite_keys: true
+      add_error_key: true
+
+setup.ilm.enabled: false
+setup.template.enabled: true
+setup.template.name: "cdc-events"
+setup.template.pattern: "cdc-events-*"
+
+output.elasticsearch:
+  hosts: ["http://elasticsearch:9200"]
+  index: "cdc-events-%{+yyyy.MM.dd}"
